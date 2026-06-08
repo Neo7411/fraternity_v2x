@@ -1,0 +1,29 @@
+# CAM vevo parameterek (autoware_2 / a masodik entitas)
+# Inditas:
+#   sudo python3 autoware_cam_receiver.py --ros-args --params-file cam_recv_params.yaml
+#
+# RViz: Add -> By topic -> PredictedObjects a /v2x/cpm/objects temarol.
+
+/**:
+  ros__parameters:
+    interface: "eth0"
+    output_topic: "/v2x/cpm/objects"   # mint a tutorialban; valtoztathato
+    frame_id: "map"
+
+    # ASN.1 (CAM rel1) - a konteneren beluli utak (ugyanaz mint a kuldonel)
+    asn1_files:
+      - "/home/aw/vanetza_src/asn1/EN302637-2v141-CAM.asn"
+      - "/home/aw/vanetza_src/asn1/TS102894-2v131-CDD.asn"
+
+    # !!! UGYANAZ legyen, mint a KULDONEL, kulonben rossz helyre kerul az objektum !!!
+    origin_latitude: 47.5301
+    origin_longitude: 21.6243
+    origin_altitude: 120.0
+
+    publish_rate_hz: 10.0
+    object_timeout_s: 2.0          # ennyi ido utan eltunik, ha nem jon ujabb CAM
+    object_height: 1.5            # m (a CAM-ben nincs magassag)
+    predicted_path_horizon_s: 5.0
+    predicted_path_dt_s: 0.5
+    own_station_id: -1            # ha ez az entitas is kuld, ird be ide a sajat station_id-jat
+    log_debug: true
