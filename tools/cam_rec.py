@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-# Szerzo: Angi David
-# Unideb - Autoware & V2X Integracio
-#
-# CAM VEVO: az eth0-on figyeli a GeoNetworking (0x8947) kereteket, dekodolja a
-# CAM-eket, es a kuldo jarmuvet autoware_perception_msgs/PredictedObjects-kent
-# teszi kozze -> RViz-ben megjelenitheto egy masik Autoware entitasban,
-# ugy mint az AutowareV2X tutorialban (/v2x/cpm/objects).
-#
-# Egy CAM a KULDO sajat jarmuvet irja le, ezert allomasonkent (stationID) egy
-# PredictedObject jon letre, a kuldo poziciojan/iranyan/sebessegen.
-#
-# FONTOS: az origin_* ITT UGYANAZ legyen, mint a kuldonel - kulonben rossz
-# helyre kerul az objektum (local terkepnel nincs valos georeferencia).
-#
-# Inditas (root a nyers sockethez):
-#     sudo python3 autoware_cam_receiver.py --ros-args --params-file cam_recv_params.yaml
-# RViz: Add -> By topic -> PredictedObjects a /v2x/cpm/objects temarol.
 
 import math
 import socket

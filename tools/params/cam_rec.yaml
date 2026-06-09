@@ -7,7 +7,7 @@
 /**:
   ros__parameters:
     interface: "eth0"
-    output_topic: "/v2x/cpm/objects"   # mint a tutorialban; valtoztathato
+    output_topic: "/v2x/cam/objects"   # mint a tutorialban; valtoztathato
     frame_id: "map"
 
     # ASN.1 (CAM rel1) - a konteneren beluli utak (ugyanaz mint a kuldonel)

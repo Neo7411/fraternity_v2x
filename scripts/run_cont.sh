@@ -18,6 +18,7 @@ rocker --x11 --privileged --nvidia \
     --volume "$HOME/fraternity/VANETZA/fraternity_v2x/v2x_modul/:/home/aw/dev" \
     --volume "$HOME/fraternity/VANETZA/fraternity_v2x/v2x_modul/src/vanetza/:/home/aw/vanetza_src" \
     --volume "$HOME/autoware_maps/:/home/aw/maps" \
+    --env AWID="$NUMB" \
     --name "$NAME_ARG" \
     --hostname "$NAME_ARG" \
     -- ghcr.io/autowarefoundation/autoware:universe-devel-cuda-humble bash
