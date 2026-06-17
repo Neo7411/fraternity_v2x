@@ -18,6 +18,7 @@ endif()
 
 # find dependencies
 find_package(ament_cmake_auto REQUIRED)
+find_package(ament_cmake_python REQUIRED)
 set(VANETZA_INSTALL ON)
 option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 find_package(Vanetza REQUIRED)
@@ -50,6 +51,21 @@ target_link_libraries(autoware_v2x Vanetza::vanetza ${GeographicLib_LIBRARIES} B
 rclcpp_components_register_node(autoware_v2x
   PLUGIN "v2x::V2XNode"
   EXECUTABLE autoware_v2x_node
+)
+
+# Install Python package (cam_read, cam_to_obj nodes)
+ament_python_install_package(cam
+  PACKAGE_DIR cam
+)
+
+install(PROGRAMS
+  cam/cam_read
+  cam/cam_to_obj
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY config
+  DESTINATION share/${PROJECT_NAME}
 )
 
 if(BUILD_TESTING)
