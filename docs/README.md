@@ -25,7 +25,7 @@ A scripts folderbe talalhato a `run_cont.sh` shell file aminek sehitsegevel el l
 NOTES: itt ha esetleg launch error az memory allocation miatt emelni kell a host on a memry size t (claude segít)
 
 
-## CAM launch
+## CAM telepítése `colcon` -al
 
 
 1. uj shell egy adott continer-be: <br>
@@ -36,9 +36,13 @@ NOTES: itt ha esetleg launch error az memory allocation miatt emelni kell a host
 
 3. Autoware se source olasa (az rclpy es a többi message type miatt): <br>
 `source /opt/autoware/setup.bash`
-4. CAM node indítása: <br>
-A node a `/tools` mappaba található.<br>
-`python3 cam_node.py --ros-args --params-file params/params.yaml`
+4. autowarev2x package build elése és telepitése <br>
+`cd dev` <br>
+`colcon build --symlink-install --cmake-args -DCMAKE_BUILD_TYPE=Release`
+## CAM modul indítása: <br>
+
+`ros2 launch autoware_v2x cam.launch.py`
+
 
 NOTES: ezen commit alatt van a merged node ami egsyerre kuldi es fogajda a CAM message eket 
 

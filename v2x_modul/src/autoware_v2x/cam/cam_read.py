@@ -1,21 +1,4 @@
 #!/usr/bin/env python3
-# Szerzo: Angi David
-# Unideb - Autoware & V2X Integracio
-#
-# Egyesitett CAM node: EGYSZERRE kuld es fogad CAM uzeneteket.
-#   - KULDES:  a sajat jarmu TF-jebol (map->base_link) valodi ASN.1 UPER CAM-ot
-#              keszit es GeoNetworking SHB keretben kiszorja az interface-re.
-#   - FOGADAS: a buszon erkezo CAM-okat dekodolja es PredictedObjects-kent
-#              publikalja RViz-nek (a sajat kuldott CAM-ot kihagyja).
-#
-# Egyetlen kod, egyetlen params.yaml, egy nyers socket mindket iranyra.
-#
-# A node a NATIV ROS parameter rendszerrel olvassa be a parametereket. A kodban
-# NINCS beegetett alapertek: minden parameter a params.yaml-bol jon, hianyzo
-# parameter eseten a node hibat dob.
-#
-# Inditas:
-#     sudo python3 cam_node.py --ros-args --params-file params/params.yaml
 
 import math
 import os
