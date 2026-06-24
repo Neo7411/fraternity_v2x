@@ -1,0 +1,41 @@
+services:
+  vanetza-v1:
+    image: vanetza-nap:latest
+    container_name: vanetza-v1
+    hostname: vanetza-v1
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    environment:
+      # --- station ---
+      - VANETZA_STATION_ID=1
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:01
+      # --- interfész (MAC blocking nélkül eth0 marad, nincs br0) ---
+      - VANETZA_INTERFACE=eth0
+      - SUPPORT_MAC_BLOCKING=false
+      # --- hogy egyáltalán elinduljon (nincs gpsd) ---
+      - VANETZA_USE_HARDCODED_GPS=true
+      - VANETZA_LATITUDE=47.53
+      - VANETZA_LONGITUDE=21.62
+      # --- logolás: a bejövő (vett) üzenetek JSON-ja + debug ---
+      - VANETZA_ENABLE_JSON_PRINTS=true
+      - VANETZA_DEBUG_ENABLED=true
+      # single-node teszt: a saját CAM-jét is vegye+logolja (multik. visszajön)
+      # multi-vehicle-nél állítsd vissza true-ra!
+      - VANETZA_IGNORE_OWN_MESSAGES=false
+      # --- Zenoh mód: router minden interfészen, MQTT/DDS off ---
+      - VANETZA_ZENOH_LOCAL_ONLY=false
+      - START_EMBEDDED_MOSQUITTO=false
+      - VANETZA_CAM_ZENOH_ENABLED=true
+      - VANETZA_CAM_MQTT_ENABLED=false
+      - VANETZA_CAM_DDS_ENABLED=false
+    ports:
+      - "7447:7447/tcp"
+    networks:
+      vanetzalan0:
+        ipv4_address: 192.168.98.10
+
+networks:
+  vanetzalan0:
+    external: true

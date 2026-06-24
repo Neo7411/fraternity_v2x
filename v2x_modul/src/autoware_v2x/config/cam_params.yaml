@@ -12,7 +12,7 @@
     # ====================================================================
     # KOZOS (kuldes + fogadas)
     # ====================================================================
-    interface: "eth0"
+    interface: "enp5s0"
 
     # ASN.1 (CAM rel1) - a konteneren beluli utak
     asn1_files:
