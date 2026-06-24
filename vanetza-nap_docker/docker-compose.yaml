@@ -1,0 +1,40 @@
+services:
+  v1:
+    image: vanetza-nap:latest
+    container_name: vanetza-v1
+    cap_add: [NET_ADMIN, NET_RAW]
+    networks: { vanetzalan0: { ipv4_address: 192.168.98.11 } }
+    environment:
+      - VANETZA_INTERFACE=eth0
+      - VANETZA_ZENOH_LOCAL_ONLY=false
+      - VANETZA_ZENOH_INTERFACES=lo,eth0
+      - VANETZA_CAM_ZENOH_ENABLED=true
+      - VANETZA_CAM_PERIODICITY=0          # csak a TIÉD megy ki, nincs beégetett CAM
+      - VANETZA_IGNORE_OWN_MESSAGES=true    # ne halld vissza a sajátodat
+      - VANETZA_STATION_ID=1
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:01
+      - VANETZA_CAM_TOPIC_IN=v1/in/cam
+      - VANETZA_CAM_TOPIC_OUT=v1/out/cam
+
+  v2:
+    image: vanetza-nap:latest
+    container_name: vanetza-v2
+    cap_add: [NET_ADMIN, NET_RAW]
+    networks: { vanetzalan0: { ipv4_address: 192.168.98.12 } }
+    environment:
+      - VANETZA_INTERFACE=eth0
+      - VANETZA_ZENOH_LOCAL_ONLY=false
+      - VANETZA_ZENOH_INTERFACES=lo,eth0
+      - VANETZA_CAM_ZENOH_ENABLED=true
+      - VANETZA_CAM_PERIODICITY=0
+      - VANETZA_IGNORE_OWN_MESSAGES=true
+      - VANETZA_STATION_ID=2
+      - VANETZA_STATION_TYPE=5
+      - VANETZA_MAC_ADDRESS=6e:06:e0:03:00:02
+      - VANETZA_CAM_TOPIC_IN=v2/in/cam
+      - VANETZA_CAM_TOPIC_OUT=v2/out/cam
+
+networks:
+  vanetzalan0:
+    external: true

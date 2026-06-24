@@ -1,57 +1,66 @@
-import zenoh
-import json
-import time
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
-def listener(sample):
+import time
+import paho.mqtt.client as mqtt
+import json 
+
+# ---------------- BEÁLLÍTÁSOK ----------------
+BROKER_ADDRESS = "127.0.0.1"  # A Mosquitto szerver IP-je
+PORT = 1883                   # Alapértelmezett MQTT port
+TOPIC = "vanetza/in/cam"      # Ide küldjük az adatot
+# ---------------------------------------------
+
+
+def on_connect(client, userdata, flags, reason_code, properties):
+    """Visszahívó függvény (callback), ha sikeres a csatlakozás."""
+    if reason_code == 0:
+        print(f"Sikeresen csatlakozva a brokerhez: {BROKER_ADDRESS}:{PORT}")
+    else:
+        print(f"Sikertelen csatlakozás. Hibakód: {reason_code}")
+
+def main():
+    # Kliens létrehozása (a VERSION2 eltünteti a deprecation warningot)
+    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    client.on_connect = on_connect
+
+    with open('./asd.json', 'r') as f:
+        template = json.load(f)
+        
+    print(f"Csatlakozási kísérlet...")
     try:
-        # Payload dekódolása
-        try:
-            payload_str = sample.payload.to_string()
-        except AttributeError:
-            payload_str = bytes(sample.payload).decode('utf-8')
-        
-        json_data = json.loads(payload_str)
-        station_id = json_data.get("stationID", "Ismeretlen")
-        
-        # Elnavigálunk a referencePosition részhez a JSON-ben
-        cam_params = json_data.get("fields", {}).get("cam", {}).get("camParameters", {})
-        ref_pos = cam_params.get("basicContainer", {}).get("referencePosition", {})
-        
-        # Nyers értékek kinyerése
-        raw_lat = ref_pos.get("latitude", 0.0)
-        raw_lon = ref_pos.get("longitude", 0.0)
-        
-        # ETSI Szabvány szűrése ("Unavailable" értékek kezelése)
-        # 900000001 = Nincs GPS adat (Latitude)
-        # 1800000001 = Nincs GPS adat (Longitude)
-        if raw_lat >= 900000001 or raw_lon >= 1800000001:
-            print(f"🚗 Jármű [{station_id}]: ⚠️ NINCS ÉRVÉNYES GPS ADAT (Álló/Beltéri helyzet)")
-        else:
-            # Osztás 10^7-nel, hogy megkapjuk a valós fokokat
-            lat = raw_lat / 10000000.0
-            lon = raw_lon / 10000000.0
-            print(f"🚗 Jármű [{station_id}]: 🌍 Lat: {lat:.6f}, Lon: {lon:.6f}")
+        client.connect(BROKER_ADDRESS, PORT, 60)
+    except ConnectionRefusedError:
+        print(f"HIBA: A kapcsolat elutasítva! Fut a Mosquitto broker a {BROKER_ADDRESS} címen?")
+        return
+
+    # Elindítjuk az MQTT kliens hálózati szálát a háttérben
+    client.loop_start()
+
+    print(f"\nKészen áll a küldésre a '{TOPIC}' témára. (Kilépés: Ctrl+C)")
+    print("-" * 50)
+
+    try:
+        counter = 1
+        while True:
             
-    except Exception as e:
-        print(f"Hiba a feldolgozáskor: {e}")
+            # A szótárat (dictionary) visszaalakítjuk JSON stringgé
+            payload_str = json.dumps(template)
+            
+            # Üzenet publikálása a string payload-al
+            client.publish(TOPIC, payload_str)
+            print(f"[KÜLDVE] -> {payload_str}")
+            
+            counter += 1
+            time.sleep(2)  # 2 másodperc szünet
+            
+    except KeyboardInterrupt:
+        print("\nLeállítás kérése...")
+    finally:
+        # Tisztességes lekapcsolódás
+        client.loop_stop()
+        client.disconnect()
+        print("Kapcsolat lezárva.")
 
 if __name__ == "__main__":
-    conf = zenoh.Config()
-    conf.insert_json5("mode", '"client"')
-    conf.insert_json5("connect/endpoints", '["tcp/127.0.0.1:7447"]')
-    
-    print("🔌 Kapcsolódás a Zenoh-hoz... (tcp/127.0.0.1:7447)")
-    session = zenoh.open(conf)
-    
-    topic = "vanetza/out/cam"
-    sub = session.declare_subscriber(topic, listener)
-    
-    print(f"📍 Figyelem a koordinátákat a '{topic}' témán...\n" + "-"*50)
-    
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nKilépés...")
-    finally:
-        session.close()
+    main()
