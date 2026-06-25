@@ -1,10 +1,12 @@
 #!/bin/bash
 
-# Az N értékének beállítása (első argumentum, alapértelmezés: 1)
-N=${1:-1}
+# A ROS_DOMAIN_ID lekérdezése az aktuális sessionből. Ha nincs, az alapértelmezés 1.
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
+N=$ROS_DOMAIN_ID
+
 pip install paho-mqtt
 
-echo "Konfiguráció inicializálása (N=$N)..."
+echo "Konfiguráció inicializálása (N=$N, ROS_DOMAIN_ID=$ROS_DOMAIN_ID)..."
 
 # Hostnév felvétele 
 echo "127.0.0.1 $(hostname)" >> /etc/hosts
@@ -38,6 +40,17 @@ export VANETZA_LOCAL_MQTT_BROKER="127.0.0.1"
 
 echo "Környezeti változók beállítva. (MAC: $VANETZA_MAC_ADDRESS, LAT: $VANETZA_LATITUDE)"
 
-# Socktap indítása
+# --- AUTOWARE KÖRNYEZET BETÖLTÉSE ---
+echo "Autoware környezet source-olása..."
+source /opt/autoware/setup.bash
+
+# --- PYTHON SCRIPTEK INDÍTÁSA A HÁTTÉRBEN ---
+echo "V2X CAM send/receive scriptek indítása a háttérben..."
+python3 /home/aw/tools/cam_receive.py &
+python3 /home/aw/tools/cam_send.py &
+# Várunk egy picit, hogy a ROS 2 node-ok biztosan elinduljanak a socktap előtt
+sleep 1 
+
+# Socktap indítása az előtérben
 echo "Socktap indítása..."
-socktap -c /home/aw/tools/config.ini    
+socktap -c /home/aw/tools/config.ini

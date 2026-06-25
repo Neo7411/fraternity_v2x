@@ -56,22 +56,6 @@ def station_id_to_uuid(station_id):
     u.uuid = list(packed) + [0] * 8
     return u
 
-STATIONTYPE_TO_LABEL = {
-    0:  ObjectClassification.UNKNOWN,
-    1:  ObjectClassification.PEDESTRIAN,
-    2:  ObjectClassification.BICYCLE,
-    3:  ObjectClassification.MOTORCYCLE,
-    4:  ObjectClassification.MOTORCYCLE,
-    5:  ObjectClassification.CAR,
-    6:  ObjectClassification.BUS,
-    7:  ObjectClassification.TRUCK,
-    8:  ObjectClassification.TRUCK,
-    9:  ObjectClassification.TRAILER,
-    10: ObjectClassification.CAR,
-    11: ObjectClassification.CAR,
-    15: ObjectClassification.UNKNOWN,
-}
-
 LAT_UNAVAIL = 900000001
 LON_UNAVAIL = 1800000001
 HEADING_UNAVAIL = 3601
@@ -92,9 +76,10 @@ class CAMToTracked(Node):
 
         self.out_topic = p('output_topic', '/perception/object_recognition/tracking/objects').value
         self.map_frame = p('map_frame', 'map').value
+        
+        # 20 Hz-es frissítés az RViz stabilitásáért (megszűnik a villogás)
         self.rate_hz = float(p('rate_hz', 30.0).value)
         self.timeout_s = float(p('object_timeout_s', 3.0).value)
-        self.own_station_id = int(p('own_station_id', -1).value)
 
         lat0 = float(p('map_origin_lat', 47.5316).value)
         lon0 = float(p('map_origin_lon', 21.6273).value)
@@ -119,7 +104,7 @@ class CAMToTracked(Node):
             self.get_logger().error(f'MQTT csatlakozasi hiba: {e}')
 
         self.create_timer(1.0 / self.rate_hz, self._publish_tick)
-        self.get_logger().info(f"Figyelem: '{self.cam_topic}' -> '{self.out_topic}'")
+        self.get_logger().info(f"Figyelem: '{self.cam_topic}' -> '{self.out_topic}' (20 Hz)")
 
     def _on_connect(self, client, userdata, flags, reason_code, properties):
         if reason_code == 0:
@@ -129,92 +114,77 @@ class CAMToTracked(Node):
     def _on_message(self, client, userdata, msg):
         try:
             data = json.loads(msg.payload.decode('utf-8'))
-        except Exception as e:
+        except Exception:
             return
 
-        # ETSI JSON struktura kibontasa
         sid = data.get('stationID')
-        if sid is None and 'header' in data:
-            sid = data['header'].get('stationId')
-
+        if sid is None:
+            sid = data.get('fields', {}).get('header', {}).get('stationId')
         if sid is None:
             return
 
-        if self.own_station_id >= 0 and int(sid) == self.own_station_id:
-            return
+        cam_params = data.get('fields', {}).get('cam', {}).get('camParameters', {})
+        if not cam_params:
+            cam_params = data.get('camParameters', {})
 
-        # Változók inicializálása
         lat, lon, alt = LAT_UNAVAIL, LON_UNAVAIL, ALT_UNAVAIL
         heading, speed, yaw_rate = HEADING_UNAVAIL, SPEED_UNAVAIL, YAWRATE_UNAVAIL
-        length, width, st_type = LEN_UNAVAIL, WIDTH_UNAVAIL, 0
+        length, width = LEN_UNAVAIL, WIDTH_UNAVAIL
 
-        # Ha Vanetza ASN.1 nested formátumot ad ki:
-        if 'camParameters' in data:
-            cam_params = data['camParameters']
+        if cam_params:
             basic = cam_params.get('basicContainer', {})
             ref_pos = basic.get('referencePosition', {})
             hf = cam_params.get('highFrequencyContainer', {}).get('basicVehicleContainerHighFrequency', {})
 
-            st_type = basic.get('stationType', 0)
             lat = ref_pos.get('latitude', LAT_UNAVAIL)
             lon = ref_pos.get('longitude', LON_UNAVAIL)
-            
-            # Altitűd kiszedése (lehet dict vagy int)
             alt_obj = ref_pos.get('altitude', {})
             alt = alt_obj.get('altitudeValue', ALT_UNAVAIL) if isinstance(alt_obj, dict) else alt_obj
             
-            # Heading kiszedése
             hdg_obj = hf.get('heading', {})
             heading = hdg_obj.get('headingValue', HEADING_UNAVAIL) if isinstance(hdg_obj, dict) else hdg_obj
-            
-            # Sebesség kiszedése
             spd_obj = hf.get('speed', {})
             speed = spd_obj.get('speedValue', SPEED_UNAVAIL) if isinstance(spd_obj, dict) else spd_obj
-            
-            # Yaw rate kiszedése
             yr_obj = hf.get('yawRate', {})
             yaw_rate = yr_obj.get('yawRateValue', YAWRATE_UNAVAIL) if isinstance(yr_obj, dict) else yr_obj
             
-            # Méretek
             len_obj = hf.get('vehicleLength', {})
             length = len_obj.get('vehicleLengthValue', LEN_UNAVAIL) if isinstance(len_obj, dict) else len_obj
             width = hf.get('vehicleWidth', WIDTH_UNAVAIL)
-        else:
-            # Fallback lapos (flat) JSON esetére
-            lat = data.get('latitude', LAT_UNAVAIL)
-            lon = data.get('longitude', LON_UNAVAIL)
-            alt = data.get('altitude', ALT_UNAVAIL)
-            heading = data.get('heading', HEADING_UNAVAIL)
-            speed = data.get('speed', SPEED_UNAVAIL)
-            yaw_rate = data.get('yawRate', YAWRATE_UNAVAIL)
-            length = data.get('length', LEN_UNAVAIL)
-            width = data.get('width', WIDTH_UNAVAIL)
-            st_type = int(data.get('stationType', 0))
 
         if lat == LAT_UNAVAIL or lon == LON_UNAVAIL:
             return
 
-        # VISSZASKÁLÁZÁS LEBEGŐPONTOSRA (ETSI mértékegységek feloldása)
-        # Ha a latitude nagyobb mint 90 fok, akkor biztosan mikro-fokokban van (pl 475000000)
-        if abs(lat) > 900: lat = float(lat) / 1e7
-        else: lat = float(lat)
-        
-        if abs(lon) > 1800: lon = float(lon) / 1e7
-        else: lon = float(lon)
+        # OKOS VISSZASKÁLÁZÁS
+        lat = float(lat)
+        lon = float(lon)
+        if abs(lat) > 900: lat /= 1e7
+        if abs(lon) > 1800: lon /= 1e7
 
-        if alt != ALT_UNAVAIL and abs(alt) > 1000: alt = float(alt) / 100.0
+        alt = float(alt)
+        if alt != ALT_UNAVAIL and abs(alt) > 1000: alt /= 100.0
         elif alt == ALT_UNAVAIL: alt = self.alt0
 
-        if heading != HEADING_UNAVAIL: heading = float(heading) / 10.0
-        if speed != SPEED_UNAVAIL: speed = float(speed) / 100.0
-        if yaw_rate != YAWRATE_UNAVAIL: yaw_rate = float(yaw_rate) / 100.0
+        # JAVÍTÁS: A heading már normál fokban van, NEM osztjuk 10-zel!
+        heading = float(heading)
         
-        if length != LEN_UNAVAIL: length = float(length) / 10.0
+        speed = float(speed)
+        if speed > 200 and speed != SPEED_UNAVAIL: speed /= 100.0 
+        
+        yaw_rate = float(yaw_rate)
+        if abs(yaw_rate) > 500 and yaw_rate != YAWRATE_UNAVAIL: yaw_rate /= 100.0
+        
+        length = float(length)
+        if length != LEN_UNAVAIL:
+            if length >= 10: length /= 10.0
         else: length = 4.5
         
-        if width != WIDTH_UNAVAIL: width = float(width) / 10.0
+        width = float(width)
+        if width != WIDTH_UNAVAIL:
+            if width >= 10: width /= 10.0
         else: width = 1.8
 
+        # ENU és YAW konverzió
         e, n, u = self.geo.convert(lat, lon, alt)
         yaw = heading_deg_to_enu_yaw(heading) if heading != HEADING_UNAVAIL else 0.0
         has_orientation = heading != HEADING_UNAVAIL
@@ -222,18 +192,15 @@ class CAMToTracked(Node):
         yaw_rate_rad = 0.0 if yaw_rate == YAWRATE_UNAVAIL else math.radians(yaw_rate)
 
         with self._lock:
-            is_new = int(sid) not in self._objects
             self._objects[int(sid)] = {
                 'e': e, 'n': n, 'u': u,
                 'yaw': yaw, 'has_orientation': has_orientation,
                 'speed': speed, 'yaw_rate': yaw_rate_rad,
                 'length': length, 'width': width,
-                'station_type': st_type,
                 'stamp': self.get_clock().now(),
             }
 
-        if is_new:
-            self.get_logger().info(f"[UJ] CAM kuldo stationID={sid} | lat={lat:.6f} lon={lon:.6f} -> ENU(e={e:.1f}, n={n:.1f})")
+        self.get_logger().info(f"Auto (ID: {sid}) pozicio: E={e:.2f}, N={n:.2f}, Igeny: {heading:.1f} deg")
 
     def _build_tracked_object(self, sid, s):
         obj = TrackedObject()
@@ -241,7 +208,7 @@ class CAMToTracked(Node):
         obj.existence_probability = 1.0
 
         cls = ObjectClassification()
-        cls.label = STATIONTYPE_TO_LABEL.get(s['station_type'], ObjectClassification.UNKNOWN)
+        cls.label = ObjectClassification.CAR
         cls.probability = 1.0
         obj.classification = [cls]
 

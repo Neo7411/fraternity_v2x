@@ -1,0 +1,1 @@
+docker build -t autoware-vanetza:latest .
