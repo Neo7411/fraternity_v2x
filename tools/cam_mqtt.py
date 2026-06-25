@@ -150,6 +150,31 @@ class AutowareCamMqtt(Node):
         # Memóriában lévő sablon teljes másolása, hogy ne írjuk felül az eredetit
         cam = copy.deepcopy(self.cam_template)
 
+        # --- Megoldas A: nincs lowFrequencyContainer -> nincs ExteriorLights bug ---
+        # Kivesszuk kuldes elott, ha a sablon tartalmazza:
+        cam["camParameters"].pop("lowFrequencyContainer", None)
+
+        # HF container biztositasa (accelerationControl ide kerul, ez SIZE(7), nem bukik)
+        if "highFrequencyContainer" not in cam["camParameters"]:
+            cam["camParameters"]["highFrequencyContainer"] = {
+                "basicVehicleContainerHighFrequency": {}
+            }
+        
+        # Biztosítjuk, hogy a basicVehicleContainerHighFrequency is létezik
+        if "basicVehicleContainerHighFrequency" not in cam["camParameters"]["highFrequencyContainer"]:
+            cam["camParameters"]["highFrequencyContainer"]["basicVehicleContainerHighFrequency"] = {}
+
+        # Acceleration control beállítása
+        cam["camParameters"]["highFrequencyContainer"]["basicVehicleContainerHighFrequency"]["accelerationControl"] = {
+            "brakePedalEngaged": True,
+            "gasPedalEngaged": True,
+            "emergencyBrakeEngaged": True,
+            "collisionWarningEngaged": True,
+            "accEngaged": True,
+            "cruiseControlEngaged": True,
+            "speedLimiterEngaged": True
+        }
+
         veh_len = round(self.veh_len, 1) if self.veh_len > 0 else 1023
         veh_wid = round(self.veh_wid, 1) if self.veh_wid > 0 else 62
 

@@ -2,6 +2,7 @@
 
 # Az N értékének beállítása (első argumentum, alapértelmezés: 1)
 N=${1:-1}
+pip install paho-mqtt
 
 echo "Konfiguráció inicializálása (N=$N)..."
 
@@ -26,7 +27,7 @@ export VANETZA_MAC_ADDRESS=$(printf '6e:06:e0:03:00:%02x' "$N")
 export VANETZA_IGNORE_OWN_MESSAGES=true
 export VANETZA_RSSI_ENABLED=false
 export VANETZA_USE_HARDCODED_GPS=true
-export VANETZA_LATITUDE=$(python3 -c "print(47.5316 + $N*0.0005)")
+export VANETZA_LATITUDE=47.5316 
 export VANETZA_LONGITUDE=21.6273
 
 # --- MQTT BEÁLLÍTÁSOK ---

@@ -1,66 +1,48 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
-import time
 import paho.mqtt.client as mqtt
-import json 
 
-# ---------------- BEÁLLÍTÁSOK ----------------
-BROKER_ADDRESS = "127.0.0.1"  # A Mosquitto szerver IP-je
-PORT = 1883                   # Alapértelmezett MQTT port
-TOPIC = "vanetza/in/cam"      # Ide küldjük az adatot
-# ---------------------------------------------
+# Beállítások
+BROKER_ADDRESS = "localhost"  # Írd át a bróker IP címére, ha nem a saját gépeden fut
+PORT = 1883                   # Az MQTT alapértelmezett portja
+TOPIC = "vanetza/out/cam"
 
-
-def on_connect(client, userdata, flags, reason_code, properties):
-    """Visszahívó függvény (callback), ha sikeres a csatlakozás."""
-    if reason_code == 0:
-        print(f"Sikeresen csatlakozva a brokerhez: {BROKER_ADDRESS}:{PORT}")
+# Ez a függvény fut le, amikor sikeresen csatlakozunk a brókerhez
+def on_connect(client, userdata, flags, rc):
+    if rc == 0:
+        print(f"Sikeresen csatlakozva a brókerhez! Feliratkozás: {TOPIC} ...")
+        client.subscribe(TOPIC)
     else:
-        print(f"Sikertelen csatlakozás. Hibakód: {reason_code}")
+        print(f"Hiba a csatlakozáskor! Hibakód: {rc}")
 
-def main():
-    # Kliens létrehozása (a VERSION2 eltünteti a deprecation warningot)
-    client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-    client.on_connect = on_connect
-
-    with open('./asd.json', 'r') as f:
-        template = json.load(f)
+# Ez a függvény fut le, amikor új üzenet érkezik
+def on_message(client, userdata, msg):
+    try:
+        # Megpróbáljuk UTF-8 szövegként dekódolni a csomagot
+        payload = msg.payload.decode('utf-8')
+    except UnicodeDecodeError:
+        # Ha bináris adat (pl. nyers bájtok), akkor így írjuk ki
+        payload = msg.payload
         
-    print(f"Csatlakozási kísérlet...")
-    try:
-        client.connect(BROKER_ADDRESS, PORT, 60)
-    except ConnectionRefusedError:
-        print(f"HIBA: A kapcsolat elutasítva! Fut a Mosquitto broker a {BROKER_ADDRESS} címen?")
-        return
+    print(f"[{msg.topic}] -> {payload}")
 
-    # Elindítjuk az MQTT kliens hálózati szálát a háttérben
-    client.loop_start()
+# Kliens példányosítása
+client = mqtt.Client()
 
-    print(f"\nKészen áll a küldésre a '{TOPIC}' témára. (Kilépés: Ctrl+C)")
-    print("-" * 50)
+# Eseménykezelők (callbackek) hozzárendelése
+client.on_connect = on_connect
+client.on_message = on_message
 
-    try:
-        counter = 1
-        while True:
-            
-            # A szótárat (dictionary) visszaalakítjuk JSON stringgé
-            payload_str = json.dumps(template)
-            
-            # Üzenet publikálása a string payload-al
-            client.publish(TOPIC, payload_str)
-            print(f"[KÜLDVE] -> {payload_str}")
-            
-            counter += 1
-            time.sleep(2)  # 2 másodperc szünet
-            
-    except KeyboardInterrupt:
-        print("\nLeállítás kérése...")
-    finally:
-        # Tisztességes lekapcsolódás
-        client.loop_stop()
-        client.disconnect()
-        print("Kapcsolat lezárva.")
+print(f"Csatlakozás a brókerhez: {BROKER_ADDRESS}:{PORT}")
 
-if __name__ == "__main__":
-    main()
+# Csatlakozás
+try:
+    client.connect(BROKER_ADDRESS, PORT, 60)
+except Exception as e:
+    print(f"Nem sikerült csatlakozni a brókerhez: {e}")
+    exit(1)
+
+# Végtelen ciklus, ami figyeli a bejövő forgalmat (CTRL+C-vel megszakítható)
+try:
+    client.loop_forever()
+except KeyboardInterrupt:
+    print("\nKilépés...")
+    client.disconnect()
