@@ -78,7 +78,7 @@ class CAMToTracked(Node):
         self.map_frame = p('map_frame', 'map').value
         
         # 20 Hz-es frissítés az RViz stabilitásáért (megszűnik a villogás)
-        self.rate_hz = float(p('rate_hz', 30.0).value)
+        self.rate_hz = float(p('rate_hz', 50.0).value)
         self.timeout_s = float(p('object_timeout_s', 3.0).value)
 
         lat0 = float(p('map_origin_lat', 47.5316).value)
