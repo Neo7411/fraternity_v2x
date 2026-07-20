@@ -21,4 +21,4 @@ rocker --x11 --privileged --nvidia \
     --env ROS_DOMAIN_ID="$NUMB" \
     --name "$NAME_ARG" \
     --hostname "$NAME_ARG" \
-    -- autoware-vanetza:latest bash 
+    -- autoware_vanetza:latest bash 
