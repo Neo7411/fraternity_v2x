@@ -1,1 +1,1 @@
-docker build -t autoware-vanetza:latest .
+docker build -t autoware-vanetza_nap:latest .
