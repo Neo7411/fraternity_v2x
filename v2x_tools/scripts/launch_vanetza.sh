@@ -40,14 +40,14 @@ export VANETZA_LOCAL_MQTT_BROKER="127.0.0.1"
 
 echo "Környezeti változók beállítva. (MAC: $VANETZA_MAC_ADDRESS, LAT: $VANETZA_LATITUDE)"
 
-# --- AUTOWARE KÖRNYEZET BETÖLTÉSE ---
-echo "Autoware környezet source-olása..."
-source /opt/autoware/setup.bash
+# # --- AUTOWARE KÖRNYEZET BETÖLTÉSE ---
+# echo "Autoware környezet source-olása..."
+# source /opt/autoware/setup.bash
 
-# # --- PYTHON SCRIPTEK INDÍTÁSA A HÁTTÉRBEN ---
-echo "V2X CAM send/receive scriptek indítása a háttérben..."
-python3 /home/aw/tools/cam/cam_receive.py &
-python3 /home/aw/tools/cam/cam_send.py &
+# # # --- PYTHON SCRIPTEK INDÍTÁSA A HÁTTÉRBEN ---
+# echo "V2X CAM send/receive scriptek indítása a háttérben..."
+# python3 /home/aw/tools/cam/cam_receive.py &
+# python3 /home/aw/tools/cam/cam_send.py &
 # Várunk egy picit, hogy a ROS 2 node-ok biztosan elinduljanak a socktap előtt
 sleep 1 
 
