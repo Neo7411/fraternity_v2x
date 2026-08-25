@@ -1,35 +1,11 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-DENM vevo - TESZT MOD: csak kiirja a helyzetet, nem fekez.
-
-Menete:
-  1. Fogadja a DENM-eket a vanetza/out/denm MQTT topicrol.
-  2. Validalja (kotelezo mezok, ertelmes lat/lon, nem lejart, nem sajat magunk).
-  3. FOLYAMATOS figyeles: minden esemenyhez (actionId) csuszoablakot tart az
-     utolso N pozicioval, es minden ujabb uzenetnel ujraertekel
-     (report_period_s-kent riportol, hogy 10 Hz-en ne spammeljen).
-  4. Geometria - a relativ vektort a sajat yaw-val elforgatjuk jarmu
-     koordinatakba:
-       X = hosszirany (+ elore),  Y = oldalirany (+ balra)
-     - Elottem van?  X > 0 es a szog a kupon belul.
-     - Melyik savban? |Y| <= lane_width/2 -> sajat sav, kulonben masik sav.
-     - Szembe jon?   a ket haladasi irany kozotti szog ~180 fok.
-     - Szemben ALL?  elottem van + all + szembe nez. Allo jarmu tajolasa a
-                     poziciobol elvileg sem szamolhato, ezert:
-                       1. a kuldo beteszi a headingjet a DENM location-be
-                          (a denm_send.py ezt kuldi) - ez allo autonal is jo;
-                       2. ha nincs, a track elmozdulasabol becsuljuk;
-                       3. ha most all, az UTOLSO ISMERT iranyat hasznaljuk
-                          (amig meg mozgott).
-  5. Eredmeny: csak konzol kiiras. Vesz fekezes NINCS ebben a modban.
-"""
 
 import json
 import math
 import threading
 import time
 
+from pyproj import Transformer
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -38,23 +14,15 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPo
 import paho.mqtt.client as mqtt
 
 from nav_msgs.msg import Odometry
+from tier4_external_api_msgs.srv import SetEmergency
 
-
-LAT_UNAVAIL = 900000001
-LON_UNAVAIL = 1800000001
-ALT_UNAVAIL = 800001
-
-
-def tf(src, dst):
-    import pyproj
-    return pyproj.Transformer.from_crs(src, dst, always_xy=True)
 
 
 class Wgs84ToEnu:
     """WGS84 -> lokalis ENU, ugyanazzal az origoval mint a cam_receive."""
 
     def __init__(self, lat0_deg, lon0_deg, h0_m):
-        self._lla2ecef = tf(4979, 4978)
+        self._lla2ecef = Transformer.from_crs(4979,4978, always_xy=True)
         self.x0, self.y0, self.z0 = self._lla2ecef.transform(lon0_deg, lat0_deg, h0_m)
         sl, cl = math.sin(math.radians(lat0_deg)), math.cos(math.radians(lat0_deg))
         so, co = math.sin(math.radians(lon0_deg)), math.cos(math.radians(lon0_deg))
@@ -83,9 +51,8 @@ class DenmEebl(Node):
         self.mqtt_port = int(p('mqtt_port', 1883).value)
         self.denm_topic = p('mqtt_denm_topic', 'vanetza/out/denm').value
 
-        self.own_station_id = int(p('own_station_id', 1).value)
 
-        # Csuszoablak: ennyi utolso uzenet poziciojat atlagoljuk
+        # hany uzenetbol szamoljon 
         self.sample_size = int(p('sample_size', 3).value)
         # Ennyi ido utan elfelejtjuk az esemenyt (nem jott ujabb uzenet)
         self.event_timeout_s = float(p('event_timeout_s', 5.0).value)
@@ -108,6 +75,14 @@ class DenmEebl(Node):
         # Ez alatt a sebesseg alatt a masik autot allonak tekintjuk
         self.standstill_speed_mps = float(p('standstill_speed_mps', 0.5).value)
 
+        # --- FEKEZES ---
+        self.dry_run = bool(p('dry_run', False).value)
+        self.emergency_srv = p('emergency_service',
+                               '/api/autoware/set/emergency').value
+        # Csak akkor fekezunk, ha a cause code is EEBL (dangerousSituation/99).
+        # false -> a geometria egyedul is eleg a fekezeshez.
+        self.require_eebl_cause = bool(p('require_eebl_cause', False).value)
+
         lat0 = float(p('map_origin_lat', 47.5316).value)
         lon0 = float(p('map_origin_lon', 21.6273).value)
         alt0 = float(p('map_origin_alt', 0.0).value)
@@ -125,6 +100,11 @@ class DenmEebl(Node):
         self._events = {}
         self._lock = threading.Lock()
 
+        # Mar lefekezett esemenyek (actionId), hogy egy esemenyre csak
+        # egyszer hivjuk a service-t a 10 Hz-es ismetlesek kozben.
+        self._braked = set()
+
+        self.cli = self.create_client(SetEmergency, self.emergency_srv)
         self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.mqtt_client.on_connect = self._on_connect
         self.mqtt_client.on_message = self._on_message
@@ -135,10 +115,11 @@ class DenmEebl(Node):
             self.get_logger().error(f'MQTT csatlakozasi hiba: {e}')
 
         self.create_timer(1.0, self._cleanup_tick)
+        mode = 'DRY RUN (csak kiiras)' if self.dry_run else f'FEKEZ -> {self.emergency_srv}'
         self.get_logger().info(
-            f"TESZT MOD: DENM figyeles '{self.denm_topic}' "
-            f"(minta: {self.sample_size} uzenet, kup: {self.front_cone_deg} fok) "
-            f"- csak kiiras, nincs fekezes")
+            f"DENM figyeles '{self.denm_topic}' | {mode} | "
+            f"minta={self.sample_size}, kup={self.front_cone_deg} fok, "
+            f"sav={self.lane_width_m} m, tavolsag<={self.max_distance_m} m")
 
     # ------------------------------------------------------------------ ROS
 
@@ -162,15 +143,9 @@ class DenmEebl(Node):
             self.get_logger().info(f'MQTT csatlakozva, feliratkozva: {self.denm_topic}')
 
     def _on_message(self, client, userdata, msg):
-        try:
-            data = json.loads(msg.payload.decode('utf-8'))
-        except Exception:
-            return
-
+        
+        data = json.loads(msg.payload.decode('utf-8'))
         parsed = self._parse_and_validate(data)
-        if parsed is None:
-            return
-
         key = parsed['key']
         now = time.time()
 
@@ -244,19 +219,9 @@ class DenmEebl(Node):
         if origin_sid is None or seq is None:
             self.get_logger().warn('Invalid DENM: nincs actionId', throttle_duration_sec=5.0)
             return None
-
-        # sajat uzenet kiszurese
-        if int(origin_sid) == self.own_station_id:
-            return None
-
         ev = mgmt.get('eventPosition', {})
         lat = ev.get('latitude')
         lon = ev.get('longitude')
-        if lat is None or lon is None:
-            self.get_logger().warn('Invalid DENM: nincs eventPosition', throttle_duration_sec=5.0)
-            return None
-        if lat == LAT_UNAVAIL or lon == LON_UNAVAIL:
-            return None
 
         lat = float(lat)
         lon = float(lon)
@@ -272,9 +237,8 @@ class DenmEebl(Node):
             return None
 
         alt_obj = ev.get('altitude', {})
-        alt = alt_obj.get('altitudeValue', ALT_UNAVAIL) if isinstance(alt_obj, dict) else alt_obj
-        alt = float(alt) if alt is not None else ALT_UNAVAIL
-        if alt == ALT_UNAVAIL or abs(alt) > 1e5:
+        alt = alt_obj.get('altitudeValue') if isinstance(alt_obj, dict) else alt_obj
+        if alt == abs(alt) > 1e5:
             alt = self.alt0
         elif abs(alt) > 1000:
             alt /= 100.0
@@ -521,6 +485,10 @@ class DenmEebl(Node):
         else:
             relevant, why = True, 'sajat savban, elottem'
 
+        # Opcionalis cause-code kapu: csak EEBL cause code eseten fekezunk
+        if relevant and self.require_eebl_cause and not items[-1]['is_eebl_cause']:
+            relevant, why = False, 'nem EEBL cause code (require_eebl_cause=true)'
+
         print('=' * 68)
         print(f'  DENM esemeny        : stationId={key[0]} seq={key[1]}  '
               f'(#{msg_count}. uzenet)')
@@ -543,6 +511,21 @@ class DenmEebl(Node):
         print(f'  >>> HOL VAN         : {where}')
         print(f'  >>> SZEMBEN ALL?    : {facing_txt}')
         print(f'  >>> EEBL RELEVANS   : {relevant}  ({why})')
+
+        # --- FEKEZES ---
+        if relevant:
+            with self._lock:
+                first_time = key not in self._braked
+                if first_time:
+                    self._braked.add(key)
+            if not first_time:
+                print('  >>> FEKEZES         : mar lefekeztunk erre az esemenyre')
+            elif self.dry_run:
+                print('  >>> FEKEZES         : DRY RUN - itt fekezne')
+            else:
+                ok = self._trigger_emergency()
+                print(f'  >>> FEKEZES         : '
+                      f'{"VESZFEK KERES ELKULDVE" if ok else "HIBA - service nem elerheto"}')
         print('=' * 68)
 
         if standing:
@@ -558,6 +541,42 @@ class DenmEebl(Node):
             f'{"sajat sav" if same_lane else "masik sav"} | {onc} | '
             f'relevans={relevant}')
 
+    # ------------------------------------------------------- fekezes
+
+    def _trigger_emergency(self):
+        """Vesz fekezes kerese az Autoware-tol. True, ha a hivas elindult."""
+        if not self.cli.service_is_ready():
+            self.get_logger().error(
+                f'{self.emergency_srv} nem elerheto - nem tudok fekezni!')
+            return False
+
+        req = SetEmergency.Request()
+        req.emergency = True
+        future = self.cli.call_async(req)
+        future.add_done_callback(self._on_emergency_response)
+        self.get_logger().warn('EEBL -> VESZFEKEZES kerese elkuldve')
+        return True
+
+    def _on_emergency_response(self, future):
+        try:
+            res = future.result()
+        except Exception as e:
+            self.get_logger().error(f'Veszfek hivas hiba: {e}')
+            return
+        # tier4_external_api_msgs/ResponseStatus:
+        #   SUCCESS=1, IGNORED=2, WARN=3, ERROR=4
+        status = getattr(res, 'status', None)
+        code = getattr(status, 'code', None)
+        msg = getattr(status, 'message', '')
+        if code in (None, 1):
+            self.get_logger().warn('VESZFEKEZES AKTIV (Autoware elfogadta)')
+        elif code == 3:
+            self.get_logger().warn(f'Veszfek elfogadva figyelmeztetessel: {msg}')
+        else:
+            names = {2: 'IGNORED', 4: 'ERROR'}
+            self.get_logger().error(
+                f'Autoware nem fekezett: {names.get(code, code)} {msg}')
+
     # ------------------------------------------------------- housekeeping
 
     def _cleanup_tick(self):
@@ -571,6 +590,9 @@ class DenmEebl(Node):
                 self.get_logger().info(
                     f'DENM esemeny vege: {k} (osszesen {cnt} uzenet), track torolve')
                 del self._events[k]
+                # A fekezes-jelolest is eldobjuk: ha ugyanez az actionId
+                # kesobb ujra felbukkan, az mar UJ esemeny -> ujra fekezhet.
+                self._braked.discard(k)
 
     def destroy_node(self):
         try:

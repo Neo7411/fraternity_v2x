@@ -5,7 +5,8 @@ import copy
 import json
 import math
 import time
-
+import os 
+import pyproj
 import numpy as np
 import rclpy
 from rclpy.node import Node
@@ -39,7 +40,7 @@ class EnuToWgs84:
 
 
 def pyproj_transformer(src, dst):
-    import pyproj
+
     return pyproj.Transformer.from_crs(src, dst, always_xy=True)
 
 
@@ -61,7 +62,7 @@ class AutowareDenmMqtt(Node):
         self.mqtt_port = p('mqtt_port', 1883).value
         self.mqtt_topic = p('mqtt_topic', 'vanetza/in/denm').value
 
-        self.station_id = int(p('station_id', 175).value)
+        self.station_id = os.environ["ROS_DOMAIN_ID"]
         self.station_type = int(p('station_type', 5).value)
 
         self.map_frame = p('map_frame', 'map').value

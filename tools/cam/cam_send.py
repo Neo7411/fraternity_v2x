@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
+import os 
 import json
 import math
 import time
@@ -59,7 +59,7 @@ class AutowareCamMqtt(Node):
         self.mqtt_port = p('mqtt_port', 1883).value
         self.mqtt_topic = p('mqtt_topic', 'vanetza/in/cam').value
 
-        self.station_id = int(p('station_id', 1).value)
+        self.station_id = os.environ["ROS_DOMAIN_ID"]
         self.station_type = int(p('station_type', 5).value)
         self.veh_len = float(p('vehicle_length_m', 0.0).value)
         self.veh_wid = float(p('vehicle_width_m', 0.0).value)
