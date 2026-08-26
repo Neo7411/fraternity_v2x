@@ -1,241 +1,179 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""EEBL DENM kuldo: vészfék + DENM. Beallitasok a fajl tetejen."""
 
 import copy
 import json
 import math
 import time
-import os 
-import pyproj
+
 import numpy as np
+import pyproj
 import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy, DurabilityPolicy
 
-from nav_msgs.msg import Odometry
-from tf2_ros import Buffer, TransformListener, LookupException, ExtrapolationException
-
 import paho.mqtt.client as mqtt
+from nav_msgs.msg import Odometry
+from geometry_msgs.msg import AccelWithCovarianceStamped
+from tier4_external_api_msgs.srv import SetEmergency
+
+# ---------------- BEALLITASOK ----------------
+MQTT_BROKER = "127.0.0.1"
+MQTT_PORT = 1883
+MQTT_TOPIC = "vanetza/in/denm"
+TEMPLATE = "/vanetza/examples/in_denm.json"
+
+MAP_ORIGIN = (47.5316, 21.6273, 0.0)     # lat, lon, alt
+DECEL_THRESHOLD = -3.0                    # m/s^2, ennel indul az esemeny
+RATE_HZ = 10.0
+DURATION_S = 2.0
+STATION_TYPE = 5
+# ---------------------------------------------
 
 
-class EnuToWgs84:
-    def __init__(self, lat0_deg, lon0_deg, h0_m):
-        self.lat0 = math.radians(lat0_deg)
-        self.lon0 = math.radians(lon0_deg)
-        self._lla2ecef = pyproj_transformer(4979, 4978)
-        self._ecef2lla = pyproj_transformer(4978, 4979)
-        self.x0, self.y0, self.z0 = self._lla2ecef.transform(lon0_deg, lat0_deg, h0_m)
-        sl, cl = math.sin(self.lat0), math.cos(self.lat0)
-        so, co = math.sin(self.lon0), math.cos(self.lon0)
-        self.R = np.array([
-            [-so, -sl * co, cl * co],
-            [ co, -sl * so, cl * so],
-            [0.0,  cl,      sl],
-        ])
+class Geo:
+    def __init__(self, lat0, lon0, h0):
+        self.f_in = pyproj.Transformer.from_crs(4979, 4978, always_xy=True)
+        self.f_out = pyproj.Transformer.from_crs(4978, 4979, always_xy=True)
+        self.o = np.array(self.f_in.transform(lon0, lat0, h0))
+        la, lo = math.radians(lat0), math.radians(lon0)
+        sl, cl, so, co = math.sin(la), math.cos(la), math.sin(lo), math.cos(lo)
+        self.R = np.array([[-so, -sl * co, cl * co],
+                           [co, -sl * so, cl * so],
+                           [0.0, cl, sl]])
 
-    def convert(self, e, n, u):
-        ecef = np.array([self.x0, self.y0, self.z0]) + self.R @ np.array([e, n, u])
-        lon, lat, h = self._ecef2lla.transform(ecef[0], ecef[1], ecef[2])
+    def to_wgs(self, e, n, u):
+        x, y, z = self.o + self.R @ np.array([e, n, u])
+        lon, lat, h = self.f_out.transform(x, y, z)
         return lat, lon, h
 
 
-def pyproj_transformer(src, dst):
-
-    return pyproj.Transformer.from_crs(src, dst, always_xy=True)
-
-
-def quat_to_yaw(x, y, z, w):
-    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-
-
-def enu_yaw_to_heading_deg(yaw_rad):
-    """ENU yaw (kelettol, CCW) -> ETSI heading (eszaktol, oramutato szerint)."""
-    return (90.0 - math.degrees(yaw_rad)) % 360.0
+def info_quality(decel):
+    a = abs(decel)
+    for lim, q in ((1, 1), (2, 2), (3, 3), (4.5, 4), (6, 5), (8, 6)):
+        if a < lim:
+            return q
+    return 7
 
 
-class AutowareDenmMqtt(Node):
+class EeblSender(Node):
     def __init__(self):
-        super().__init__('autoware_denm_mqtt')
+        super().__init__("eebl_sender")
 
-        p = self.declare_parameter
-        self.mqtt_broker = p('mqtt_broker', '127.0.0.1').value
-        self.mqtt_port = p('mqtt_port', 1883).value
-        self.mqtt_topic = p('mqtt_topic', 'vanetza/in/denm').value
+        with open(TEMPLATE) as f:
+            self.template = json.load(f)
 
-        self.station_id = os.environ["ROS_DOMAIN_ID"]
-        self.station_type = int(p('station_type', 5).value)
+        self.geo = Geo(*MAP_ORIGIN)
 
-        self.map_frame = p('map_frame', 'map').value
-        self.base_frame = p('base_frame', 'base_link').value
-        self.pose_source = p('pose_source', 'kinematic_state').value
-
-        # DENM ismetles: 2 masodpercig, 10 Hz -> 20 uzenet
-        self.rate_hz = float(p('rate_hz', 10.0).value)
-        self.duration_s = float(p('duration_s', 2.0).value)
-
-        # --- JSON SABLON BETOLTESE ---
-        template_path = p('template_path', '/vanetza/examples/in_denm.json').value
-        try:
-            with open(template_path, 'r') as f:
-                self.denm_template = json.load(f)
-            self.get_logger().info(f"Sikeresen betoltve a sablon JSON: {template_path}")
-        except Exception as e:
-            self.get_logger().error(f"Hiba a JSON sablon betoltesekor: {e}")
-            self.denm_template = {}
-
-        lat0 = float(p('map_origin_lat', 47.5316).value)
-        lon0 = float(p('map_origin_lon', 21.6273).value)
-        alt0 = float(p('map_origin_alt', 0.0).value)
-        self.geo = EnuToWgs84(lat0, lon0, alt0)
+        self.mqtt = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        self.mqtt.connect(MQTT_BROKER, MQTT_PORT, 60)
+        self.mqtt.loop_start()
 
         qos = QoSProfile(depth=10, reliability=ReliabilityPolicy.BEST_EFFORT,
-                         history=HistoryPolicy.KEEP_LAST, durability=DurabilityPolicy.VOLATILE)
-        self.last_odom = None
-        self.create_subscription(Odometry, '/localization/kinematic_state', self._on_odom, qos)
+                         history=HistoryPolicy.KEEP_LAST,
+                         durability=DurabilityPolicy.VOLATILE)
+        self.odom = None
+        self.accel = 0.0
+        self.create_subscription(Odometry, "/localization/kinematic_state",
+                                 self._odom_cb, qos)
+        self.create_subscription(AccelWithCovarianceStamped,
+                                 "/localization/acceleration", self._accel_cb, qos)
 
-        self.tf_buffer = Buffer()
-        self.tf_listener = TransformListener(self.tf_buffer, self)
+        self.cli = self.create_client(SetEmergency, "/api/autoware/set/emergency")
+        self.braked = False
+        self.event = None
+        self.peak = 0.0
+        self.sent = 0
+        self.total = int(DURATION_S * RATE_HZ)
 
-        # Egy esemenyhez egy actionId + egy detectionTime, az ismetlesek alatt fix
-        self.sequence_number = 0
-        self.detection_time = None
-        self.sent_count = 0
-        self.total_count = max(1, int(round(self.duration_s * self.rate_hz)))
+        self.create_timer(1.0 / RATE_HZ, self._tick)
 
-        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
-        try:
-            self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, 60)
-            self.mqtt_client.loop_start()
-            self.get_logger().info('MQTT Csatlakozva!')
-        except Exception as e:
-            self.get_logger().error(f'MQTT hiba: {e}')
+    def _odom_cb(self, msg):
+        self.odom = msg
 
-        self.get_logger().info(
-            f"DENM kuldes: {self.duration_s}s @ {self.rate_hz}Hz = {self.total_count} uzenet"
-        )
-        self.timer = self.create_timer(1.0 / self.rate_hz, self._tick)
+    def _accel_cb(self, msg):
+        self.accel = msg.accel.accel.linear.x
+        self.peak = min(self.peak, self.accel)
 
-    def _on_odom(self, msg: Odometry):
-        self.last_odom = msg
-
-    def _get_state(self):
-        """Visszaadja: (e, n, u, yaw_rad, speed_mps), vagy None ha meg nincs pozicio.
-
-        A yaw azert kell, mert a vevo oldal ebbol tudja meg, hogy szembe
-        nezunk-e vele - allo jarmunel a poziciobol ez nem szamolhato ki.
-        """
-        speed = 0.0
-        if self.last_odom is not None:
-            tw = self.last_odom.twist.twist
-            speed = math.hypot(tw.linear.x, tw.linear.y)
-
-        if self.pose_source == 'tf':
-            try:
-                tf = self.tf_buffer.lookup_transform(self.map_frame, self.base_frame, rclpy.time.Time())
-            except (LookupException, ExtrapolationException):
-                return None
-            t, q = tf.transform.translation, tf.transform.rotation
-            yaw = quat_to_yaw(q.x, q.y, q.z, q.w)
-            return t.x, t.y, t.z, yaw, speed
-
-        if self.last_odom is None:
-            return None
-        pp = self.last_odom.pose.pose
-        yaw = quat_to_yaw(pp.orientation.x, pp.orientation.y,
-                          pp.orientation.z, pp.orientation.w)
-        return pp.position.x, pp.position.y, pp.position.z, yaw, speed
-
-    def _build_denm(self, lat, lon, alt):
-        """A sablon szerkezetet valtozatlanul hagyja, csak az erteket irja at."""
-        if not self.denm_template:
-            return None
-
-        # Memoriaban levo sablon teljes masolata, hogy ne irjuk felul az eredetit
-        denm = copy.deepcopy(self.denm_template)
-        now = time.time()
-
-        try:
-            mgmt = denm["management"]
-
-            # --- FELULIRAS: ActionID (az egesz ismetlessorozatban ugyanaz) ---
-            mgmt["actionId"]["originatingStationId"] = self.station_id
-            mgmt["actionId"]["sequenceNumber"] = self.sequence_number
-
-            # detectionTime = az esemeny keletkezese (fix), referenceTime = ez az uzenet
-            mgmt["detectionTime"] = round(self.detection_time, 3)
-            mgmt["referenceTime"] = round(now, 3)
-
-            # --- FELULIRAS: eventPosition = az auto valos GPS poziciója ---
-            ev = mgmt["eventPosition"]
-            ev["latitude"] = lat
-            ev["longitude"] = lon
-            if "altitude" in ev:
-                ev["altitude"]["altitudeValue"] = round(alt, 2)
-
-            mgmt["validityDuration"] = int(math.ceil(self.duration_s))
-            mgmt["stationType"] = self.station_type
-
-        except KeyError as e:
-            self.get_logger().error(f"Hianyzo kulcs a sablonban! Ellenorizd a JSON fajlt: {e}")
-            return None
-
-        return denm
+    def _brake(self):
+        if self.cli.wait_for_service(timeout_sec=2.0):
+            self.cli.call_async(SetEmergency.Request(emergency=True))
+            self.get_logger().warn(">>> VESZFEK")
+        else:
+            self.get_logger().error("/api/autoware/set/emergency nem elerheto")
 
     def _tick(self):
-        st = self._get_state()
-        if st is None:
-            self.get_logger().warn('Nincs pozicio...', throttle_duration_sec=2.0)
+        if self.odom is None:
             return
 
-        e, n, u, yaw, speed = st
-        lat, lon, alt = self.geo.convert(e, n, u)
-        heading_deg = enu_yaw_to_heading_deg(yaw)
+        if not self.braked:
+            self.braked = True
+            self._brake()
+            return
 
-        # Az elso sikeres kuldesnel rogzitjuk az esemeny detektalasi idejet
-        if self.detection_time is None:
+        p = self.odom.pose.pose
+        tw = self.odom.twist.twist
+        speed = math.hypot(tw.linear.x, tw.linear.y)
+
+        if self.event is None:
+            if self.accel > DECEL_THRESHOLD:
+                self.get_logger().info(f"varok... a={self.accel:.2f}",
+                                       throttle_duration_sec=1.0)
+                return
+            q = p.orientation
+            yaw = math.atan2(2 * (q.w * q.z + q.x * q.y),
+                             1 - 2 * (q.y * q.y + q.z * q.z))
+            lat, lon, alt = self.geo.to_wgs(p.position.x, p.position.y, p.position.z)
+            self.event = (lat, lon, alt, (90 - math.degrees(yaw)) % 360, speed)
             self.detection_time = time.time()
+            self.get_logger().warn(
+                f"ESEMENY: {lat:.7f},{lon:.7f} v={speed:.1f} m/s a={self.accel:.2f}")
 
-        denm = self._build_denm(lat, lon, alt)
-        if denm is None:
-            return
+        lat, lon, alt, heading, v0 = self.event
+        d = copy.deepcopy(self.template)
+        m = d["management"]
+        # originatingStationId-t a Vanetza-NAP tolti ki, itt nem irjuk felul.
+        m["actionId"]["sequenceNumber"] = 0
+        m["detectionTime"] = round(self.detection_time, 3)
+        m["referenceTime"] = round(time.time(), 3)
+        m["eventPosition"]["latitude"] = lat
+        m["eventPosition"]["longitude"] = lon
+        m["eventPosition"]["altitude"]["altitudeValue"] = round(alt, 2)
+        m["validityDuration"] = int(math.ceil(DURATION_S))
+        m["stationType"] = STATION_TYPE
 
-        if self.sent_count == 0:
-            print("-" * 60 + "\n" + json.dumps(denm, indent=2) + "\n" + "-" * 60)
+        d["situation"]["informationQuality"] = info_quality(self.peak)
+        d["situation"]["eventType"] = {"ccAndScc": {"dangerousSituation99": 1}}
 
-        self.mqtt_client.publish(self.mqtt_topic, json.dumps(denm))
-        self.sent_count += 1
+        if self.sent == 0:
+            print(json.dumps(d, indent=2))
+
+        self.mqtt.publish(MQTT_TOPIC, json.dumps(d))
+        self.sent += 1
         self.get_logger().info(
-            f"DENM {self.sent_count}/{self.total_count} kikuldve "
-            f"(lat={lat:.7f}, lon={lon:.7f}, heading={heading_deg:.1f} fok, "
-            f"v={speed:.1f} m/s)"
-        )
+            f"DENM {self.sent}/{self.total} peak={self.peak:.2f} m/s^2")
 
-        if self.sent_count >= self.total_count:
-            self.get_logger().info('DENM ismetles kesz, leallas.')
-            self.timer.cancel()
+        if self.sent >= self.total:
             raise SystemExit
 
     def destroy_node(self):
-        try:
-            self.mqtt_client.loop_stop()
-            self.mqtt_client.disconnect()
-        except Exception:
-            pass
-        finally:
-            super().destroy_node()
+        self.mqtt.loop_stop()
+        self.mqtt.disconnect()
+        super().destroy_node()
 
 
 def main():
     rclpy.init()
-    node = AutowareDenmMqtt()
+    n = EeblSender()
     try:
-        rclpy.spin(node)
+        rclpy.spin(n)
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
-        node.destroy_node()
+        n.destroy_node()
         rclpy.shutdown()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

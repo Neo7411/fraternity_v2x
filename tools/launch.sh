@@ -46,8 +46,9 @@ source /opt/autoware/setup.bash
 
 # # --- PYTHON SCRIPTEK INDÍTÁSA A HÁTTÉRBEN ---
 echo "V2X CAM send/receive scriptek indítása a háttérben..."
-python3 /home/aw/tools/cam/cam_receive.py &
 python3 /home/aw/tools/cam/cam_send.py &
+python3 /home/aw/tools/cam/cam_receive.py &
+
 # Várunk egy picit, hogy a ROS 2 node-ok biztosan elinduljanak a socktap előtt
 sleep 1 
 
