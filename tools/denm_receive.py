@@ -24,15 +24,19 @@ from lanelet2.geometry import findNearest, to2D, toArcCoordinates
 import paho.mqtt.client as mqtt
 
 from nav_msgs.msg import Odometry
-from autoware_perception_msgs.msg import TrackedObjects
+from geometry_msgs.msg import Point, Vector3
+from autoware_perception_msgs.msg import (
+    TrackedObjects, TrackedObject, ObjectClassification, Shape,
+)
 
 # A fraternity_v2x telepitett ROS csomag (source /home/aw/dev/install/setup.bash).
 # Ugyanaz a projekcio, amivel a denm_send.py a GPS-t szamolja.
-from fraternity_v2x.tools.map_tools import MapProjection
+from fraternity_v2x.tools.map_tools import MapProjection, station_id_to_uuid
 
 MAP = '/home/aw/maps/highway2'
 OBJ_TOPIC = '/perception/object_recognition/tracking/objects'
 EGO_TOPIC = '/localization/kinematic_state'
+OUT_TOPIC = '/v2x/denm/braking_vehicles'
 
 LANE_W = 3.5        # savszelesseg a sav-offset kerekitesehez
 HEADING_TOL = 90.0  # ennel nagyobb elteresnel ellenirany a sav
@@ -103,7 +107,10 @@ class DenmReceiver(Node):
                 lanelet2.traffic_rules.Participants.Vehicle))
 
         self.ego = None
-        # station_id -> tavolsag (m), csak az elottunk, sajat savban levok
+        # station_id -> (tavolsag, TrackedObject), csak az elottunk levok.
+        # A DENM-ben nincs sebesseg (a LocationContainer-t a Vanetza eldobja),
+        # de ugyanaz az auto a CAM-bol ott van a trackingen -- onnan vesszuk
+        # a sebesseget, a meretet es az orientaciot.
         self.front = {}
         self._lock = threading.Lock()
         # (station_id, seq) parosokat egyszer jelentunk
@@ -113,6 +120,10 @@ class DenmReceiver(Node):
         self.create_subscription(Odometry, EGO_TOPIC, self._on_ego, 10)
         self.create_subscription(TrackedObjects, OBJ_TOPIC, self._on_objs, 10)
         self.create_timer(5.0, self._heartbeat)
+
+        # A fekezo, elottunk levo jarmuvek -- ugyanaz a tipus, amit a
+        # cam_receiver is publikal, igy az RViz es a planning is erti.
+        self.pub = self.create_publisher(TrackedObjects, OUT_TOPIC, 10)
 
         self.mqtt = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
         self.mqtt.on_connect = self._on_connect
@@ -191,7 +202,7 @@ class DenmReceiver(Node):
                 p = o.kinematics.pose_with_covariance.pose.position
                 ds = self._ahead(center, ego_arc, p.x, p.y)
                 if ds is not None:
-                    front[obj_id(o.object_id)] = ds
+                    front[obj_id(o.object_id)] = (ds, o)
             self.front = front
 
     def _heartbeat(self):
@@ -204,8 +215,8 @@ class DenmReceiver(Node):
             f = dict(self.front)
         self.get_logger().info(
             f'[status] DENM: {self.rx} | elottem: '
-            + (', '.join(f'{i} ({d:.0f} m)' for i, d in sorted(
-                f.items(), key=lambda kv: kv[1])) if f else '-'))
+            + (', '.join(f'{i} ({d:.0f} m)' for i, (d, _) in sorted(
+                f.items(), key=lambda kv: kv[1][0])) if f else '-'))
 
     # ------------------------------------------------------------ DENM
 
@@ -225,11 +236,15 @@ class DenmReceiver(Node):
 
         self.rx += 1
 
+        obj = None
         with self._lock:
-            dist = self.front.get(str(sid))
-            # Ha az ado nem latszik a trackingben (nem kuld CAM-et), a DENM
-            # sajat eventPosition-jebol dontunk.
-            if dist is None:
+            hit = self.front.get(str(sid))
+            if hit is not None:
+                dist, obj = hit
+            else:
+                # Ha az ado nem latszik a trackingben (nem kuld CAM-et), a
+                # DENM sajat eventPosition-jebol dontunk.
+                dist = None
                 ref = self._reference()
                 if ref is not None:
                     x, y, _ = self.geo.to_map(lat, lon, 0.0)
@@ -241,15 +256,54 @@ class DenmReceiver(Node):
                 throttle_duration_sec=2.0)
             return
 
+        # A sebesseg a trackingbol jon: a DENM-ben nincs benne.
+        if speed is None and obj is not None:
+            tw = obj.kinematics.twist_with_covariance.twist.linear
+            speed = math.hypot(tw.x, tw.y)
+
+        self._publish(sid, obj, lat, lon, speed)
+
         if (sid, seq) in self._seen:
             return
         self._seen.add((sid, seq))
 
         v = f'{speed:.1f} m/s ({speed * 3.6:.0f} km/h)' if speed is not None \
-            else 'nincs sebesseg a DENM-ben'
+            else 'ismeretlen'
         self.get_logger().warn(
             f'>>> ELOTTUNK FEKEZ: ID={sid} | {lat:.7f}, {lon:.7f} | '
-            f'{dist:.0f} m | fekezesi sebesseg: {v}')
+            f'{dist:.0f} m | sebesseg: {v}')
+
+    def _publish(self, sid, obj, lat, lon, speed):
+        """A fekezo jarmu TrackedObjects-kent, minden ismert adattal."""
+        out = TrackedObjects()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.header.frame_id = 'map'
+
+        if obj is not None:
+            # A trackingbol jott: pozicio, orientacio, meret, sebesseg keszen.
+            out.objects.append(obj)
+        else:
+            # Csak a DENM-bol tudunk rola: a GPS-t visszaprojektaljuk.
+            t = TrackedObject()
+            t.object_id = station_id_to_uuid(sid)
+            t.existence_probability = 1.0
+
+            cls = ObjectClassification()
+            cls.label = ObjectClassification.CAR
+            cls.probability = 1.0
+            t.classification = [cls]
+
+            x, y, z = self.geo.to_map(lat, lon, 0.0)
+            t.kinematics.pose_with_covariance.pose.position = Point(
+                x=x, y=y, z=z)
+            if speed is not None:
+                t.kinematics.twist_with_covariance.twist.linear.x = speed
+
+            t.shape.type = Shape.BOUNDING_BOX
+            t.shape.dimensions = Vector3(x=4.5, y=1.8, z=1.5)
+            out.objects.append(t)
+
+        self.pub.publish(out)
 
     def destroy_node(self):
         try:

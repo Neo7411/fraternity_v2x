@@ -61,15 +61,11 @@ class DenmSender(Node):
         self.decel_threshold = float(p('decel_threshold', -3.0).value)
 
         # Ne varjunk lassulasra: azonnal kuldjunk a jelenlegi allapottal.
-        self.force = bool(p('force', False).value)
+        self.force = bool(p('force', True).value)
 
         # Indulaskor keruljon-e veszfek az EGO-ra (a ROS service call).
-        self.auto_brake = bool(p('auto_brake', True).value)
+        self.auto_brake = bool(p('auto_brake', False).value)
         self.brake_srv = p('brake_service', '/api/autoware/set/emergency').value
-
-        # A LocationContainer eventSpeed/heading mezoit nem minden Vanetza
-        # sema fogadja el -- ha elszall a kodolas, kapcsold ki.
-        self.with_location = bool(p('with_location_container', True).value)
 
         with open(self.template_path) as f:
             self.template = json.load(f)
@@ -148,19 +144,9 @@ class DenmSender(Node):
             'eventType': {'ccAndScc': {'dangerousSituation99': 1}},
         }
 
-        if self.with_location:
-            # Itt megy ki a fekezesi sebesseg es az irany.
-            d['location'] = {
-                'eventSpeed': {
-                    'speedValue': round(speed, 2),
-                    'speedConfidence': 127,
-                },
-                'eventPositionHeading': {
-                    'headingValue': round(heading, 1),
-                    'headingConfidence': 127,
-                },
-                'traces': [],
-            }
+        # LocationContainer NINCS: a benne kotelezo
+        # detectionZonesToEventPosition (Traces) miatt a Vanetza az egesz
+        # DENM-et eldobja, es a vevohoz semmi nem er el.
         return d
 
     def _tick(self):
